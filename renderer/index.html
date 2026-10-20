@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' collabo: data: blob:; connect-src 'self'">
+  <meta name="color-scheme" content="light dark">
+  <title>Collabo 3D打印文件管理器</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="side">
+      <div class="side-head"><span class="brand">模型库</span></div>
+      <button id="btn-add" class="primary">＋ 添加目录</button>
+      <div class="section">目录</div>
+      <ul id="dirs"></ul>
+      <div class="section">格式</div>
+      <div id="formats"></div>
+    </aside>
+    <main id="main">
+      <header id="bar">
+        <input id="search" type="search" placeholder="搜索文件名或路径…" autocomplete="off">
+        <select id="sort" title="排序">
+          <option value="name">名称</option>
+          <option value="mtime">修改时间</option>
+          <option value="size">大小</option>
+        </select>
+        <label class="zoom" title="缩略图大小"><input id="zoom" type="range" min="120" max="320" value="190"></label>
+        <button id="btn-refresh" title="刷新 (F5)">刷新</button>
+      </header>
+      <section id="grid"></section>
+      <div id="empty" hidden>
+        <p>还没有模型</p>
+        <p class="hint">点击左侧「添加目录」，扫描 STL / OBJ / 3MF / STEP / IGES 文件</p>
+      </div>
+      <footer id="status"><span id="count"></span><span id="progress"></span></footer>
+    </main>
+  </div>
+
+  <div id="viewer" hidden>
+    <div class="v-head">
+      <span id="v-title"></span>
+      <span id="v-info"></span>
+      <span class="spacer"></span>
+      <button id="v-reset">重置视角</button>
+      <label class="chk"><input id="v-wire" type="checkbox"> 线框</label>
+      <button id="v-fins">Support Fins</button>
+      <button id="v-reveal">所在文件夹</button>
+      <button id="v-close">关闭 (Esc)</button>
+    </div>
+    <div class="v-body">
+      <canvas id="v-canvas"></canvas>
+      <div id="v-msg"></div>
+    </div>
+  </div>
+
+  <div id="ctx" hidden></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

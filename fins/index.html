@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>支撑鳍 Support Fins — 一键生成可掰断支撑</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="viewport"></div>
+<div id="selection-rect" hidden aria-hidden="true"></div>
+<div id="measure-hint" class="canvas-pill" hidden>测量模式：点击模型表面（自动吸附顶点） · Esc退出</div>
+<div id="op-hint" class="canvas-pill">拖拽旋转 · 滚轮缩放 · 右键平移 · Ctrl/Shift+拖拽框选</div>
+<div id="mesh-context-menu" role="menu" hidden></div>
+
+<!-- Long-build spinner: revealed by a 1s timer while a support build runs in the
+     worker, hidden the moment it lands, so a quick rebuild never flashes it.
+     Purely informational; pointer-events:none lets clicks pass to the canvas. -->
+<div id="spinner" aria-live="polite"><span class="ring"></span>正在生成支撑…</div>
+
+<header id="topbar">
+  <!-- The file manager opens the model; the picker stays in the DOM (hidden) for app.js. -->
+  <input type="file" id="file" accept=".stl,.3mf,.step,.stp,.iges,.igs,.brep" hidden>
+  <label class="btn" title="按每个文件的原始坐标组合载入，导出 3MF 时保留独立网格">
+    <span id="merge-label">合并多个模型</span><input type="file" id="merge-files" multiple
+      accept=".stl,.3mf,.step,.stp,.iges,.igs,.brep" hidden>
+  </label>
+  <button class="btn" id="split-components" title="按共享边连通性拆分；每个不连通零件导出为独立 STL，打包成 ZIP" disabled>拆分独立零件 ZIP</button>
+  <button class="btn" id="box-select" type="button" aria-pressed="false" title="框选：按住 Ctrl 或 Shift 拖动画框" hidden disabled>框选模型</button>
+  <span id="mesh-selection-status" class="mesh-selection-status" aria-live="polite">未选择网格</span>
+  <button class="btn" id="mesh-move" type="button" title="移动所选网格 (W)：拖动画布中的坐标轴手柄" disabled>移动所选</button>
+  <button class="btn" id="mesh-rotate" type="button" title="旋转所选网格 (E)：拖动画布中的圆环手柄" disabled>旋转所选</button>
+  <button class="btn" id="mesh-scale" type="button" title="缩放所选网格 (R)：拖动画布中的方块手柄" disabled>缩放所选</button>
+  <button class="btn" id="whole-rotate" type="button" title="选择模式 (Q)：结束网格编辑，恢复整体旋转手柄" disabled>整体旋转</button>
+  <button class="btn" id="measure-toggle" type="button" aria-pressed="false" title="测量距离 (Esc退出)" disabled>测量距离</button>
+  <button class="btn" id="measure-clear" type="button" title="清除全部测量" disabled>清除测量</button>
+  <button class="btn fins-toggle" id="fins-toggle">添加支撑鳍</button>
+  <label class="field">
+    成型空间
+    <select id="volume"></select>
+  </label>
+  <span class="field custom-vol" id="custom-vol" hidden>
+    <input type="number" id="vx" min="20" max="2000" step="1" aria-label="宽度">×<input
+           type="number" id="vy" min="20" max="2000" step="1" aria-label="深度">×<input
+           type="number" id="vz" min="20" max="2000" step="1" aria-label="高度">mm
+  </span>
+  <label class="field" title="相对底板低于此角度的表面需要支撑。">
+    悬垂角
+    <input type="range" id="thr" min="30" max="70" step="1" value="45">
+    <output id="thr-val">45°</output>
+  </label>
+  <!-- Export buttons removed from the UI; kept hidden because app.js binds to them. -->
+  <button class="btn" id="export" hidden>导出 STL</button>
+  <button class="btn" id="export-3mf" hidden title="在 Bambu Studio、OrcaSlicer、PrusaSlicer 中打开时已按此朝向摆好且无需支撑。Bambu/PrusaSlicer 可能提示“无配置文件，仅载入几何”——这是正常的，零件本身完全正确。">导出 3MF</button>
+</header>
+
+<!-- The two stacked left-hand panels (stats + rotate controls) share one fixed
+     rail (top of screen to bottom) that scrolls as a unit, so a short window can
+     never let them overlap. The right-hand panels use the same trick (#right-rail,
+     below). -->
+<div id="left-rail">
+<aside id="stats" hidden>
+  <dl>
+    <dt>文件</dt>             <dd id="s-name">—</dd>
+    <dt>三角面</dt>           <dd id="s-tris">—</dd>
+    <dt>尺寸</dt>             <dd id="s-bbox">—</dd>
+    <dt>成型空间</dt>         <dd id="s-fit">—</dd>
+  </dl>
+  <hr>
+  <dl>
+    <dt><i class="sw sw-over"></i>悬垂</dt>      <dd id="s-over">—</dd>
+    <dt>面积</dt>                                <dd id="s-overarea">—</dd>
+    <dt><i class="sw sw-bed"></i>底面接触</dt>   <dd id="s-bed">—</dd>
+    <dt><i class="sw sw-fin"></i>支撑</dt>       <dd><span id="s-fins">—</span><button
+        type="button" class="note-info" id="s-fin-info" hidden
+        aria-label="这些支撑的工作原理，以及当前朝向未覆盖的部分">i</button></dd>
+    <dt><i class="sw sw-pad"></i>底盘垫</dt>     <dd id="s-pad">—</dd>
+    <dt>分析</dt>                                <dd id="s-time">—</dd>
+  </dl>
+</aside>
+
+<aside id="orient" hidden>
+  <span class="lbl">旋转 90°</span>
+  <button class="btn sm" id="rot-x" aria-label="绕 X 轴旋转 90 度">X</button>
+  <button class="btn sm" id="rot-y" aria-label="绕 Y 轴旋转 90 度">Y</button>
+  <button class="btn sm" id="rot-z" aria-label="绕 Z 轴旋转 90 度">Z</button>
+  <button class="btn sm" id="rot-reset">复位</button>
+  <button class="btn sm" id="undo" title="撤销 (⌘/Ctrl+Z)" disabled>撤销</button>
+  <button class="btn sm" id="redo" title="重做 (⇧⌘/Ctrl+Shift+Z)" disabled>重做</button>
+  <p class="readout"><span id="rot-now">X 0° · Y 0° · Z 0°</span><span id="rot-delta"></span></p>
+  <p class="hint">拖动圆环旋转零件，或者：</p>
+  <button class="btn sm" id="lay-face"
+          title="先点这里，再点零件上的某个面，就能让该面平贴底板。默认关闭，避免误点打乱摆放。">以面贴平</button>
+  <!-- Automatic strength view: no input. The faint frames show how the print is
+       layered (they stay horizontal while the part turns inside them), and the note
+       says where this orientation is weak. A printed part splits across its layers,
+       so orientation IS strength -- this makes that visible as you rotate. -->
+  <div class="layerview">
+    <label class="check layers-toggle" title="显示零件周围的水平打印层线。">
+      <input type="checkbox" id="show-layers">显示层线
+    </label>
+  </div>
+  <div class="suggest">
+    <div class="suggest-head">
+      <button class="btn sm" id="suggest-orient">推荐摆放方向</button>
+      <button class="disclosure" id="suggest-toggle" hidden aria-expanded="true"
+              aria-label="收起推荐结果" title="收起">&rsaquo;</button>
+    </div>
+    <div id="suggest-body">
+      <p class="hint" id="suggest-note"></p>
+      <div id="suggest-list" hidden></div>
+    </div>
+  </div>
+  <!-- Strength arrow: the layer view above is automatic; this checks the print
+       against how the part is loaded in use. Point the arrow the way the part is
+       pulled/pushed and it reports whether the layers resist that load and can turn
+       the part to the strongest printable pose. Only the direction matters (pull
+       model), so a handful of buttons is the honest input -- no 3D aiming, and
+       nothing that collides with click-to-lay. No fake "Nx stronger" number: the
+       verdict is qualitative. -->
+  <div class="loadfx">
+    <p class="loadfx-lede"><strong>受力箭头</strong>：零件往哪受力？</p>
+    <div class="strength-pad" role="group" aria-label="受力方向">
+      <button class="btn sm" id="load-up"    aria-label="受力朝上">↑</button>
+      <button class="btn sm" id="load-down"  aria-label="受力朝下">↓</button>
+      <button class="btn sm" id="load-left"  aria-label="受力朝左">←</button>
+      <button class="btn sm" id="load-right" aria-label="受力朝右">→</button>
+      <button class="btn sm" id="load-front" aria-label="受力朝向自己">⊙ 前</button>
+      <button class="btn sm" id="load-back"  aria-label="受力远离自己">⊗ 后</button>
+    </div>
+    <button class="btn sm" id="load-clear" hidden>清除</button>
+    <p class="load-verdict" id="load-note" hidden></p>
+    <button class="btn sm" id="load-suggest" hidden>转到可打印的最强朝向</button>
+  </div>
+</aside>
+<!-- Spacer AFTER the panels so they top-anchor and grow DOWNWARD: content that
+     appears on a click (the suggestion list, the load verdict) never shoves the
+     controls above it upward. Shrinks to nothing when the rail has to scroll. -->
+<div class="rail-spacer"></div>
+</div><!-- /left-rail -->
+
+<!-- Right rail: the fin options (top, grows down) and the status/receipt card
+     (bottom) share ONE fixed scrolling column, exactly like #left-rail, so a tall
+     draw-mode options panel can never overlap the receipt or overflow the viewport
+     -- under pressure the rail scrolls and a flex spacer keeps status pinned low. -->
+<div id="right-rail">
+<!-- Fin options live OUTSIDE the topbar on purpose. Inline, they appeared and
+     disappeared with the toggle, which re-flowed the whole bar and pushed it onto
+     a second row on narrower screens: the act of turning fins on moved every
+     other control out from under the pointer. -->
+<aside id="fin-opts" hidden>
+  <!-- Material: PETG welds to a support far harder than the PLA the bite numbers
+       were tuned for, so it needs more clearance everywhere. PLA is the default and
+       keeps today's tight grip; PETG widens the support gap + fin-tine standoff,
+       halves the tine bite, thins the bed pad, and turns the pad's tack into a gap.
+       Applied in app.js (applyMaterial), which also re-syncs the tunables below. -->
+  <label class="fld" id="material-fld" title="你要使用的耗材。PETG 与支撑的粘连远强于 PLA，所以选 PETG 会加大各处间隙、减小卡齿咬入量，并把底盘垫的咬合改成留缝。PLA 保持更紧的抓附。">
+    材料
+    <select id="material">
+      <option value="pla">PLA</option>
+      <option value="petg">PETG</option>
+    </select>
+  </label>
+  <label class="fld">
+    放置方式
+    <select id="fin-mode" title="由谁来决定支撑的位置。">
+      <!-- Two modes only, on purpose. AUTO (fins.js mode 'auto') is the default and
+           does everything: a tined combined fin on each overhang face steep and flat
+           enough to grip, a plain breakaway prop under the shallow/curved ones that
+           can't take a fin. DRAW lets you place a fin by hand. The old fins-only
+           "Combined fin" mode was dropped -- it built nothing (and said nothing) on
+           parts with no fin sites, which just read as broken. -->
+      <option value="auto">自动 — 自动放置支撑</option>
+      <option value="draw">手动 — 我自己放置</option>
+    </select>
+  </label>
+  <label class="check" title="倾斜摆放的零件只靠一条边接触底板，没有底盘垫容易翘边脱落。">
+    <input type="checkbox" id="bed-pad" checked>添加底盘垫
+  </label>
+  <!-- Combined support toggle: ON = horizontal tines fuse the support to the part
+       so it grips (Slant3D combined support); OFF = the plain breakaway wall that
+       just stands under the overhang and snaps off. Same fin, tines or no tines. -->
+  <label class="check" title="卡齿把支撑与零件咬合在一起，形成抓附而不只是顶住。关闭 = 单纯的可掰断支撑墙。">
+    <input type="checkbox" id="tines" checked>卡齿（咬住零件）
+  </label>
+  <!-- Tine grip density: how tightly the horizontal tine comb is spaced along each
+       gripping support. Light = a loose comb (fewest marks, the default) — a per-wall
+       floor keeps at least a few tines so it still holds; Firm = a dense comb (max grip)
+       for a tippy or tall part, at the cost of more marks on the supported face.
+       Defaults Light so the part comes out cleanest; dial up only if it needs the grip.
+       Shown only when Tines is on. -->
+  <label class="fld" id="tinegrip-fld"
+         title="卡齿的排列密度。疏 = 痕迹最少（默认），每段墙仍保留最少卡齿以维持抓附；密 = 密集齿梳、最大抓附，适合头重脚轻或较高的零件。">
+    卡齿密度 <span class="mut">疏 ⟶ 密</span>
+    <input type="range" id="tine-density" min="0" max="100" step="5" value="0">
+  </label>
+  <!-- Contact/gap tuning: the default holds and breaks off for most parts, but the
+       right clearance depends on the printer and the surface you care about, so it
+       is exposed. Support gap = clearance between a support top and the part (bigger
+       = cleaner surface / easier to remove, too big = stops holding the overhang).
+       Pad grip = how far the bed pad bites into a tilted part to keep it on the
+       plate (bigger = holds harder, too big = harder to snap off). -->
+  <!-- Layer height: the grip tines are exactly ONE layer tall so they print as one
+       clean bead and BEND off instead of tearing. That only holds if this matches
+       the layer height you actually slice at -- set it wrong and the tines slice
+       into ~1.5 layers and leave welts. Shown only when Tines is on. -->
+  <label class="fld" id="layerh-fld" title="请填你实际切片用的层高。卡齿正好一层高，因此能干净掰断；如果这里与实际层高不符，卡齿会被撕裂并留下痕迹。默认 0.2mm。">
+    层高 <span class="mut">mm</span>
+    <input type="number" id="layer-height" min="0.08" max="0.4" step="0.04" value="0.2">
+  </label>
+  <label class="fld" title="支撑顶部与零件之间的间隙。越大 = 表面越干净、越好拆；太大则托不住悬垂。默认 0.2mm。">
+    支撑间隙 <span class="mut">mm</span>
+    <input type="number" id="gap" min="0.1" max="0.4" step="0.05" value="0.2">
+  </label>
+  <label class="fld" id="padgrip-fld" title="底盘垫与倾斜零件的接触方式。正值 = 咬入更多、抓得更牢；0 = 齐平；负值 = 留缝，掰断更干净（PETG 因为粘连强而默认留缝）。PLA 默认 0.05mm。">
+    底盘垫咬合 <span class="mut">mm</span>
+    <input type="number" id="pad-grip" min="-0.2" max="0.3" step="0.05" value="0.05">
+  </label>
+  <!-- Wide-face row density: an overhang face too wide for one corner brace gets a
+       ROW of fins (a wide tilted plate would otherwise sag between two braces).
+       This sets the row pitch: Sparse = fewer fins / less plastic, Dense = more.
+       Defaults Sparse (fewest fins / least plastic); a floor keeps at least one brace
+       so a wide face is never left bare. Dial up only if a broad plate sags between
+       braces. Only bites on a broad face; narrow parts keep their 2-corner bracing. -->
+  <label class="fld" id="coverage-fld"
+         title="在大面积悬垂面上排布支撑鳍的密度。中间是防下垂的默认值；往左拉 = 更少的鳍（小零件可以只留一个，若宽面有下垂风险读数会提示），往右拉 = 更多支撑。窄零件不受影响。">
+    宽面覆盖密度 <span class="mut">疏 ⟶ 密</span>
+    <input type="range" id="coverage" min="0" max="100" step="5" value="50">
+  </label>
+  <!-- Suggest + Draw mix: place extra walls by hand where auto-placement missed.
+       Shown only in Suggest mode (toggled in app.js). -->
+  <button class="btn sm" id="augment-toggle" hidden
+          title="在自动放置的基础上，再手动补几段可掰断支撑墙。">+ 手动添加支撑墙</button>
+  <!-- Draw controls: shown while placing by hand. Hint text is set per mode in
+       app.js (syncDrawControls): a support fin on a face in Draw, a two-point
+       wall in the Suggest "+ Add" augment. -->
+  <div id="draw-controls" hidden>
+    <p class="draw-hint" id="draw-hint">点击<strong>悬垂面</strong>（可以放支撑鳍时会亮起
+      绿色）即可在它下方立起一个支撑鳍。</p>
+    <div class="draw-btns">
+      <button class="btn sm" id="draw-undo">撤销</button>
+      <button class="btn sm" id="draw-clear">全部清除</button>
+    </div>
+  </div>
+</aside>
+<div class="rail-spacer"></div>
+<!-- Bottom-right status card: the pose/fin FEEDBACK worth glancing at. It shares
+     the right rail with the fin options above, pinned to the bottom by the flex
+     spacer, so new lines expand UPWARD into empty canvas and a tall options panel
+     scrolls the rail instead of colliding with it. Holds: the "do you even
+     need me / prints support-free" note; must-see fin trouble (a support that
+     couldn't build, a part balanced on a point); the honesty warning naming the
+     small overhangs this pose leaves UNsupported; and the grams receipt payoff once
+     fins are on. The how-it-works / how-to-fix detail lives behind the (i) on the
+     Fins stat instead of stacking up here. -->
+<aside id="status" hidden>
+  <p class="note" id="s-import-note"></p>
+  <p class="note" id="s-flat-note"></p>
+  <p class="note" id="s-fin-note"></p>
+  <p class="over-warn" id="over-warn"></p>
+  <div id="receipt" hidden>
+    <span id="r-grams">—</span>
+    <span class="r-unit">新增支撑材料</span>
+    <button type="button" class="r-info" id="r-info" aria-label="关于这个数字"
+       title="克数按 PLA 计算，只统计工具新增的鳍与底盘垫，按接近实心打印，并与生成器的体积交叉核对。实测中可掰断支撑鳍比切片软件的支撑少用 20–45% 材料，打印快约 30%。">i</button>
+  </div>
+</aside>
+</div><!-- /right-rail -->
+
+<div id="fps">—</div>
+
+<div id="drop" class="hidden">
+  <div class="inner"><p class="big">松开鼠标载入模型</p></div>
+</div>
+
+<!-- Object picker: a 3MF plate can hold several distinct objects (a Bambu/
+     MakerWorld file often does) and so can a STEP assembly, while this tool fins
+     ONE part. Rather than merge unrelated bodies into one soup, we let the user
+     choose. Shown only when a file has more than one object; single-object files
+     (and single-body STEP parts) skip it. -->
+<div id="picker" hidden>
+  <div class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+    <h2 id="picker-title">这个文件包含多个对象</h2>
+    <p class="picker-sub">选择要处理的对象。勾选多个可作为一个整体旋转；导出 3MF 仍保留独立网格。</p>
+    <ul id="picker-list"></ul>
+    <div class="picker-foot">
+      <span id="picker-hint" class="note"></span>
+      <span class="picker-actions">
+        <button class="btn" id="picker-cancel">取消</button>
+        <button class="btn primary" id="picker-load">载入</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

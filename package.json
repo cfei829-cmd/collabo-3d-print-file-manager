@@ -1,0 +1,24 @@
+{
+  "name": "collabo-3d-print-file-manager",
+  "productName": "Collabo 3D打印文件管理器",
+  "version": "1.0.0",
+  "description": "3D 打印 / CAD 文件管理、浏览、预览桌面软件",
+  "main": "main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/run.js",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.collabo.3dprint.filemanager",
+    "productName": "Collabo 3D打印文件管理器",
+    "files": ["main.js", "preload.js", "lib/**", "renderer/**", "fins/**", "build/icon.ico", "LICENSE", "THIRD-PARTY-NOTICES.md"],
+    "win": { "icon": "build/icon.ico", "target": "nsis" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  }
+}
