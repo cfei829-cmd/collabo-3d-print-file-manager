@@ -47,9 +47,53 @@ const pageSend = (channel, payload) => {
 
 /* ------------------------------- 索引 ------------------------------- */
 const lite = (r) => ({
-  id: r.id, name: r.name, ext: r.ext, size: r.size, mtimeMs: r.mtimeMs, dir: r.dir, root: r.root,
-  thumb: r.thumb, thumbFail: r.thumbFail, info: r.info
+  id: r.id, name: r.name, ext: r.ext, size: r.size, mtimeMs: r.mtimeMs, dir: r.dir, root: r.root, path: r.path,
+  thumb: r.thumb, thumbFail: r.thumbFail, info: r.info, notes: r.notes || ''
 });
+
+/* ------------------------------- 批量改名 ------------------------------- */
+const BAD_NAME = /[\\/:*?"<>|\u0000-\u001f]/;
+/** items: [{id, newName}]，newName 含扩展名。两阶段改名（先改成临时名），所以互换名字也安全。 */
+function renameFiles(items) {
+  if (!Array.isArray(items) || !items.length) return { ok: false, error: '没有要改名的文件' };
+  const plan = [];
+  const targets = new Set();
+  const sources = new Set();
+  for (const it of items) {
+    const r = it && store.get(it.id);
+    if (!r) return { ok: false, error: '文件不在索引中' };
+    const name = String(it.newName || '').trim();
+    if (!name || name === '.' || name === '..' || BAD_NAME.test(name) || /[. ]$/.test(name)) return { ok: false, error: `名称不合法：${name || '(空)'}` };
+    if (path.extname(name).toLowerCase() !== path.extname(r.name).toLowerCase()) return { ok: false, error: `不能更改扩展名：${r.name}` };
+    const to = path.join(r.dir, name);
+    const key = to.toLowerCase();
+    if (targets.has(key)) return { ok: false, error: `新名称重复：${name}` };
+    targets.add(key);
+    sources.add(r.path.toLowerCase());
+    if (to !== r.path) plan.push({ r, to });
+  }
+  for (const p of plan) {
+    if (fs.existsSync(p.to) && !sources.has(p.to.toLowerCase())) return { ok: false, error: `目标已存在：${path.basename(p.to)}` };
+  }
+  const done = [];
+  try {
+    plan.forEach((p, i) => { p.tmp = p.r.path + `.collabo-tmp-${process.pid}-${i}`; fs.renameSync(p.r.path, p.tmp); done.push(p); });
+    for (const p of plan) fs.renameSync(p.tmp, p.to);
+  } catch (e) {
+    for (const p of done) { try { if (fs.existsSync(p.tmp)) fs.renameSync(p.tmp, p.r.path); else if (fs.existsSync(p.to)) fs.renameSync(p.to, p.r.path); } catch { /* ignore */ } }
+    return { ok: false, error: '改名失败：' + e.message };
+  }
+  for (const p of plan) {
+    const oldThumb = path.join(thumbDir, p.r.id + '.png');
+    const rec = store.rename(p.r.id, p.to);
+    if (rec) {
+      try { if (fs.existsSync(oldThumb)) { fs.copyFileSync(oldThumb, path.join(thumbDir, rec.id + '.png')); fs.unlinkSync(oldThumb); } } catch { /* ignore */ }
+      try { store.patch(rec.id, { mtimeMs: fs.statSync(p.to).mtimeMs }); } catch { /* ignore */ }
+    }
+  }
+  pageSend('files:changed', {});
+  return { ok: true, count: plan.length };
+}
 
 function fastThumbs(records) {
   for (const r of records) {
@@ -155,6 +199,13 @@ function registerIpc() {
     if (r) clipboard.writeText(r.path);
     return !!r;
   });
+  ipcMain.handle('file:notes', (_e, id, notes) => {
+    if (!store.get(id) || typeof notes !== 'string') return false;
+    store.patch(id, { notes: notes.slice(0, 4000) });
+    return true;
+  });
+  ipcMain.handle('files:rename', (_e, items) => renameFiles(items));
+  ipcMain.handle('fins:url', (_e, id) => fins.previewUrl(id));
   ipcMain.handle('fins:open', async (_e, id) => {
     const url = await fins.previewUrl(id);
     const w = new BrowserWindow({
@@ -185,7 +236,7 @@ function iconPath() {
 
 function buildMenu() {
   const theme = store.settings.theme || 'system';
-  const radio = (label, value) => ({ label, type: 'radio', checked: theme === value, click: () => { setTheme(value); pageSend('theme:changed', value); } });
+  const dark = theme === 'dark' || (theme === 'system' && nativeTheme.shouldUseDarkColors);
   const tpl = [
     { label: '文件', submenu: [
       { label: '添加监控目录...', accelerator: 'CmdOrCtrl+O', click: async () => {
@@ -201,7 +252,7 @@ function buildMenu() {
       { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' }, { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' }
     ] },
     { label: '查看', submenu: [
-      { label: '主题', submenu: [radio('跟随系统', 'system'), radio('浅色', 'light'), radio('深色', 'dark')] },
+      { label: '深色主题', type: 'checkbox', checked: dark, click: (mi) => { const m = mi.checked ? 'dark' : 'light'; setTheme(m); pageSend('theme:changed', m); } },
       { type: 'separator' },
       { role: 'resetZoom', label: '实际大小' }, { role: 'zoomIn', label: '放大' }, { role: 'zoomOut', label: '缩小' },
       { type: 'separator' },

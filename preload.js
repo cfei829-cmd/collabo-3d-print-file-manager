@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('collabo', {
   reveal: (id) => ipcRenderer.invoke('file:reveal', id),
   copyPath: (id) => ipcRenderer.invoke('file:path', id),
   openFins: (id) => ipcRenderer.invoke('fins:open', id),
+  finsUrl: (id) => ipcRenderer.invoke('fins:url', id),
+  setNotes: (id, notes) => ipcRenderer.invoke('file:notes', id, notes),
+  renameFiles: (items) => ipcRenderer.invoke('files:rename', items),
   setTheme: (mode) => ipcRenderer.invoke('theme:set', mode),
   onChanged: (cb) => on('files:changed', cb),
   onTheme: (cb) => on('theme:changed', cb)
